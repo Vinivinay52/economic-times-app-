@@ -1,0 +1,20 @@
+replicaCount: 1
+
+name: economic-times-app
+namespace: default
+
+image:
+  repository: thorvini/economic-times-app
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+container:
+  port: 8080
+
+service:
+  type: NodePort
+  port: 8080
+  targetPort: 8080
+  nodePort: 30080
+
+resources: {}
