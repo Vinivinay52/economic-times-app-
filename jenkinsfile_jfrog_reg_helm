@@ -2,19 +2,20 @@ pipeline {
     agent any
 
     environment {
-        APP_NAME = "economic-times-app"
-        DOCKER_IMAGE = "vinayak432/economic-times-app"
-        IMAGE_TAG = "${BUILD_NUMBER}"
+        APP_NAME        = "economic-times-app"
+        DOCKER_IMAGE    = "thorvini/economic-times-app"
+        IMAGE_TAG       = "${BUILD_NUMBER}"
 
-        CHART_DIR = "helm/helm-economic-times-app"
-        CHART_NAME = "economic-times-app"
+        CHART_DIR       = "helm/economic-times-app"
+        CHART_NAME      = "economic-times-app"
 
-        JFROG_HOST = "trial1ttau5.jfrog.io"
+        JFROG_HOST      = "trialf5h0jz.jfrog.io"
         JFROG_HELM_REPO = "economic-times-app"
-        JFROG_OCI_URL = "oci://${JFROG_HOST}/${JFROG_HELM_REPO}"
+        JFROG_OCI_URL   = "oci://${JFROG_HOST}/${JFROG_HELM_REPO}"
 
-        KUBE_NAMESPACE = "default"
-        RELEASE_NAME = "economic-times-app"
+        KUBE_NAMESPACE  = "default"
+        RELEASE_NAME    = "economic-times-app"
+        KUBECONFIG      = "/var/lib/jenkins/.kube/config"
     }
 
     options {
@@ -27,13 +28,19 @@ pipeline {
         stage('Checkout Code') {
             steps {
                 git branch: 'main',
-                    url: 'https://github.com/vinayak432/economic-times-app-.git'
+                    url: 'https://github.com/Vinivinay52/economic-times-app-.git'
             }
         }
 
         stage('Verify Tools') {
             steps {
                 sh '''
+                    set -e
+                    echo "===== Workspace ====="
+                    pwd
+                    ls -la
+
+                    echo "===== Tool Versions ====="
                     docker --version
                     helm version
                     kubectl version --client
@@ -45,6 +52,7 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 sh """
+                    set -e
                     docker build -t ${DOCKER_IMAGE}:${IMAGE_TAG} .
                     docker tag ${DOCKER_IMAGE}:${IMAGE_TAG} ${DOCKER_IMAGE}:latest
                 """
@@ -53,8 +61,15 @@ pipeline {
 
         stage('Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker-creds',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
                     sh """
+                        set -e
                         echo "${DOCKER_PASS}" | docker login -u "${DOCKER_USER}" --password-stdin
                         docker push ${DOCKER_IMAGE}:${IMAGE_TAG}
                         docker push ${DOCKER_IMAGE}:latest
@@ -66,33 +81,55 @@ pipeline {
 
         stage('Update values.yaml image tag') {
             steps {
-                sh """
-                    python3 - <<EOF
+                withEnv([
+                    "CHART_DIR=${CHART_DIR}",
+                    "DOCKER_IMAGE=${DOCKER_IMAGE}",
+                    "IMAGE_TAG=${IMAGE_TAG}",
+                    "WORKSPACE_DIR=${WORKSPACE}"
+                ]) {
+                    sh '''
+                        set -e
+                        echo "===== Debug Workspace ====="
+                        pwd
+                        ls -la
+                        find . -name values.yaml || true
+
+                        python3 - <<'EOF'
 from pathlib import Path
+import os
 import re
 
-p = Path("${CHART_DIR}/values.yaml")
+p = Path(os.environ["WORKSPACE_DIR"]) / os.environ["CHART_DIR"] / "values.yaml"
+print("Using file:", p)
+
+if not p.exists():
+    raise FileNotFoundError("values.yaml not found at: " + str(p))
+
 text = p.read_text()
 
-text = re.sub(r'repository:\\s*.*', 'repository: ${DOCKER_IMAGE}', text)
-text = re.sub(r'tag:\\s*".*?"', 'tag: "${IMAGE_TAG}"', text)
-text = re.sub(r'tag:\\s*[^\\n]+', 'tag: "${IMAGE_TAG}"', text)
+text = re.sub(r'^\\s*repository:\\s*.*$', '  repository: ' + os.environ["DOCKER_IMAGE"], text, flags=re.MULTILINE)
+text = re.sub(r'^\\s*tag:\\s*.*$', '  tag: "' + os.environ["IMAGE_TAG"] + '"', text, flags=re.MULTILINE)
+text = re.sub(r'^\\s*pullPolicy:\\s*.*$', '  pullPolicy: Always', text, flags=re.MULTILINE)
 
 p.write_text(text)
+print("values.yaml updated successfully")
 EOF
-                    echo "===== values.yaml ====="
-                    cat ${CHART_DIR}/values.yaml
-                """
+
+                        echo "===== Updated values.yaml ====="
+                        cat "${CHART_DIR}/values.yaml"
+                    '''
+                }
             }
         }
 
         stage('Update Chart.yaml version') {
             steps {
                 sh """
+                    set -e
                     sed -i 's|^version:.*|version: 0.1.${BUILD_NUMBER}|' ${CHART_DIR}/Chart.yaml
                     sed -i 's|^appVersion:.*|appVersion: "${IMAGE_TAG}"|' ${CHART_DIR}/Chart.yaml
 
-                    echo "===== Chart.yaml ====="
+                    echo "===== Updated Chart.yaml ====="
                     cat ${CHART_DIR}/Chart.yaml
                 """
             }
@@ -100,16 +137,22 @@ EOF
 
         stage('Lint Helm Chart') {
             steps {
-                sh "helm lint ${CHART_DIR}"
+                sh """
+                    set -e
+                    helm lint ${CHART_DIR}
+                """
             }
         }
 
         stage('Package Helm Chart') {
             steps {
                 sh """
+                    set -e
                     mkdir -p packaged
                     rm -f packaged/*.tgz
                     helm package ${CHART_DIR} -d packaged
+
+                    echo "===== Packaged Chart ====="
                     ls -lh packaged
                 """
             }
@@ -117,8 +160,15 @@ EOF
 
         stage('Login to JFrog Helm OCI Registry') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'jfrog-creds', usernameVariable: 'JFROG_USER', passwordVariable: 'JFROG_PASS')]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'jfrog-creds',
+                        usernameVariable: 'JFROG_USER',
+                        passwordVariable: 'JFROG_PASS'
+                    )
+                ]) {
                     sh """
+                        set -e
                         echo "${JFROG_PASS}" | helm registry login ${JFROG_HOST} -u "${JFROG_USER}" --password-stdin
                     """
                 }
@@ -128,8 +178,13 @@ EOF
         stage('Push Chart to JFrog OCI') {
             steps {
                 sh """
+                    set -e
                     CHART_PACKAGE=\$(ls packaged/${CHART_NAME}-*.tgz | head -n 1)
-                    echo "Pushing \$CHART_PACKAGE to ${JFROG_OCI_URL}"
+
+                    echo "===== Pushing Chart ====="
+                    echo "Chart Package: \$CHART_PACKAGE"
+                    echo "Destination: ${JFROG_OCI_URL}"
+
                     helm push \$CHART_PACKAGE ${JFROG_OCI_URL}
                 """
             }
@@ -138,10 +193,19 @@ EOF
         stage('Pull Chart from JFrog OCI') {
             steps {
                 sh """
+                    set -e
                     rm -f ${CHART_NAME}-*.tgz || true
+
                     CHART_VERSION=\$(grep '^version:' ${CHART_DIR}/Chart.yaml | awk '{print \$2}')
-                    echo "Pulling ${CHART_NAME} version \$CHART_VERSION from ${JFROG_OCI_URL}"
+
+                    echo "===== Pulling Chart ====="
+                    echo "Chart Name   : ${CHART_NAME}"
+                    echo "Chart Version: \$CHART_VERSION"
+                    echo "Source       : ${JFROG_OCI_URL}"
+
                     helm pull ${JFROG_OCI_URL}/${CHART_NAME} --version \$CHART_VERSION
+
+                    echo "===== Pulled Packages ====="
                     ls -lh *.tgz
                 """
             }
@@ -150,15 +214,16 @@ EOF
         stage('Deploy from JFrog Helm OCI') {
             steps {
                 sh """
-                    set +e
-                    export KUBECONFIG=/var/lib/jenkins/.kube/config
+                    set -e
+                    export KUBECONFIG=${KUBECONFIG}
+
                     CHART_VERSION=\$(grep '^version:' ${CHART_DIR}/Chart.yaml | awk '{print \$2}')
 
                     echo "===== Kube Context ====="
-                    kubectl config current-context || true
+                    kubectl config current-context
 
                     echo "===== Nodes ====="
-                    kubectl get nodes || true
+                    kubectl get nodes
 
                     echo "===== Existing Helm Releases ====="
                     helm list -A || true
@@ -166,29 +231,32 @@ EOF
                     echo "===== Existing Services ====="
                     kubectl get svc -n ${KUBE_NAMESPACE} || true
 
-                    echo "===== Deploying chart version \$CHART_VERSION ====="
-                    helm upgrade --install ${RELEASE_NAME} ${JFROG_OCI_URL}/${CHART_NAME} \
-                      --version \$CHART_VERSION \
-                      --namespace ${KUBE_NAMESPACE} \
-                      --create-namespace \
-                      --set name=${APP_NAME} \
-                      --set namespace=${KUBE_NAMESPACE} \
-                      --set image.repository=${DOCKER_IMAGE} \
-                      --set image.tag=${IMAGE_TAG} \
+                    echo "===== Deploying Chart ====="
+                    echo "Release Name : ${RELEASE_NAME}"
+                    echo "Namespace    : ${KUBE_NAMESPACE}"
+                    echo "Chart Version: \$CHART_VERSION"
+                    echo "Image        : ${DOCKER_IMAGE}:${IMAGE_TAG}"
+
+                    helm upgrade --install ${RELEASE_NAME} ${JFROG_OCI_URL}/${CHART_NAME} \\
+                      --version \$CHART_VERSION \\
+                      --namespace ${KUBE_NAMESPACE} \\
+                      --create-namespace \\
+                      --set name=${APP_NAME} \\
+                      --set namespace=${KUBE_NAMESPACE} \\
+                      --set image.repository=${DOCKER_IMAGE} \\
+                      --set image.tag=${IMAGE_TAG} \\
+                      --set image.pullPolicy=Always \\
+                      --wait \\
                       --debug
 
-                    EXIT_CODE=\$?
-
                     echo "===== Pods ====="
-                    kubectl get pods -n ${KUBE_NAMESPACE} || true
+                    kubectl get pods -n ${KUBE_NAMESPACE}
 
                     echo "===== Services ====="
-                    kubectl get svc -n ${KUBE_NAMESPACE} || true
+                    kubectl get svc -n ${KUBE_NAMESPACE}
 
                     echo "===== Helm Releases ====="
-                    helm list -A || true
-
-                    exit \$EXIT_CODE
+                    helm list -A
                 """
             }
         }
@@ -196,7 +264,7 @@ EOF
 
     post {
         always {
-            sh 'helm registry logout ${JFROG_HOST} || true'
+            sh "helm registry logout ${JFROG_HOST} || true"
             cleanWs()
         }
         success {
