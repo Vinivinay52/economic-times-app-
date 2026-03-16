@@ -64,27 +64,36 @@ pipeline {
             }
         }
 
-        stage('Update values.yaml image tag') {
-            steps {
-                sh """
-                    python3 - <<EOF
+stage('Update values.yaml image tag') {
+    steps {
+        sh """
+            echo "===== Debug Workspace ====="
+            pwd
+            ls -la
+            find . -name values.yaml || true
+
+            python3 - <<EOF
+import os
 from pathlib import Path
 import re
 
-p = Path("${CHART_DIR}/values.yaml")
+p = Path(os.environ["WORKSPACE"]) / "${CHART_DIR}" / "values.yaml"
+print(f"Using file: {p}")
+
 text = p.read_text()
 
-text = re.sub(r'repository:\\s*.*', 'repository: ${DOCKER_IMAGE}', text)
-text = re.sub(r'tag:\\s*".*?"', 'tag: "${IMAGE_TAG}"', text)
-text = re.sub(r'tag:\\s*[^\\n]+', 'tag: "${IMAGE_TAG}"', text)
+text = re.sub(r'^\\s*repository:\\s*.*$', '  repository: ${DOCKER_IMAGE}', text, flags=re.MULTILINE)
+text = re.sub(r'^\\s*tag:\\s*.*$', '  tag: "${IMAGE_TAG}"', text, flags=re.MULTILINE)
+text = re.sub(r'^\\s*pullPolicy:\\s*.*$', '  pullPolicy: Always', text, flags=re.MULTILINE)
 
 p.write_text(text)
 EOF
-                    echo "===== values.yaml ====="
-                    cat ${CHART_DIR}/values.yaml
-                """
-            }
-        }
+
+            echo "===== values.yaml ====="
+            cat "${WORKSPACE}/${CHART_DIR}/values.yaml"
+        """
+    }
+}
 
         stage('Update Chart.yaml version') {
             steps {
